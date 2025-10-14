@@ -9,6 +9,7 @@ import time
 from collections import namedtuple
 from contextlib import AsyncExitStack
 from typing import Any, Callable, Optional, Tuple, Union
+from bisect import bisect_right, bisect_left
 
 from async_timeout import timeout
 from tenacity import (
@@ -416,7 +417,7 @@ class AsyncKefSpeaker:
         self.host = host
         self.port = port
         self.volume_step = volume_step
-        self.maximum_volume = maximum_volume
+        self.maximum_volume = 1.0 if maximum_volume is None else float(max(0.0, min(1.0, maximum_volume)))
         self.standby_time = standby_time
         self.inverse_speaker_mode = inverse_speaker_mode
         self._comm = _AsyncCommunicator(host, port, loop=loop)
@@ -442,18 +443,16 @@ class AsyncKefSpeaker:
         self._is_muted = raw >= 128
         self._volume_raw = raw - 128 if self._is_muted else raw
 
-    def _get_next_volume(self, up=True):
-        """Return the next volume step from the ladder."""
+    def _get_next_volume(self, up: bool = True) -> int:
+        """Next ladder step in raw units using bisect (strictly monotonic)."""
         current = self._volume_raw or 0
         steps = self._volume_ladder
-        try:
-            if up:
-                index = next(i for i, v in enumerate(steps) if v > current)
-            else:
-                index = next(i for i, v in reversed(list(enumerate(steps))) if v < current)
-        except StopIteration:
-            return current  # already at max/min
-        return steps[index]
+        if up:
+            idx = bisect_right(steps, current)
+            return steps[idx] if idx < len(steps) else current
+        else:
+            idx = bisect_left(steps, current) - 1
+            return steps[idx] if idx >= 0 else current
 
     @retry(**_CMD_RETRY_KWARGS)
     async def get_state(self) -> State:
@@ -531,15 +530,11 @@ class AsyncKefSpeaker:
 
     @retry(**_CMD_RETRY_KWARGS)
     async def _set_volume(self, volume: int) -> None:
-        # Write volume level (0..100) on index 3,
-        # add 128 to current level to mute.
-        response = await self._comm.send_message(
-            COMMANDS["set_volume"](volume)  # type: ignore
-        )
+        """Low-level write + cache update (handles mute flag, too)."""
+        response = await self._comm.send_message(COMMANDS["set_volume"](volume))  # type: ignore
         if response != _RESPONSE_OK:
-            raise ConnectionError(
-                f"Setting the volume failed, got response {response}."
-            )
+            raise ConnectionError(f"Setting the volume failed, got response {response}.")
+        self.set_raw_volume(volume)
 
     @retry(**_CMD_RETRY_KWARGS)
     async def set_play_pause(self) -> None:
@@ -690,10 +685,28 @@ class AsyncKefSpeaker:
     async def get_volume(self) -> Optional[float]:
         """Always report volume level, even when muted."""
         return self._volume_raw / _VOLUME_SCALE if self._volume_raw is not None else None
+        
+    def set_maximum_volume(self, value: float) -> None:
+        """Set clamp for UI volume; helpful if you want a safety ceiling."""
+        v = float(value)
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("maximum_volume must be in [0.0, 1.0]")
+        self.maximum_volume = v
+    
+    def _first_nonzero_step(self) -> int:
+        """First rung above 0 in raw units (0..100)."""
+        for v in self._volume_ladder:
+            if v > 0:
+                return v
+        return 0
 
+    @retry(**_CMD_RETRY_KWARGS)
     async def set_volume(self, value: float) -> float:
+        """Clamp, send, and sync local cache."""
         volume = max(0.0, min(self.maximum_volume, value))
-        await self._set_volume(int(volume * _VOLUME_SCALE))
+        raw = int(round(volume * _VOLUME_SCALE))  # round, not floor
+        await self._set_volume(raw)
+        self.set_raw_volume(raw)  # keep cache in sync
         return volume
 
     async def _change_volume(self, step: float) -> float:
@@ -706,17 +719,21 @@ class AsyncKefSpeaker:
         return await self.set_volume(volume + step)
 
     async def volume_up(self):
-        """Step up the volume using the custom ladder."""
+        """Unmute-resume; special-case + at zero; otherwise step up."""
         if self._is_muted:
-            await self.unmute()
+            await self.unmute()             # resume current volume
+            if (self._volume_raw or 0) == 0:
+                # Only when actually at zero, move off zero on the same press
+                first = self._first_nonzero_step()
+                await self.set_volume(first / _VOLUME_SCALE)
             return
         new_raw = self._get_next_volume(up=True)
         await self.set_volume(new_raw / _VOLUME_SCALE)
-
+    
     async def volume_down(self):
-        """Step down the volume using the custom ladder."""
+        """Unmute-resume; otherwise step down."""
         if self._is_muted:
-            await self.unmute()
+            await self.unmute()             # resume current volume, do not move
             return
         new_raw = self._get_next_volume(up=False)
         await self.set_volume(new_raw / _VOLUME_SCALE)
