@@ -26,6 +26,14 @@ _RESPONSE_OK = 17  # the full response is [82, 17, 255]
 _TIMEOUT = 2.0  # in seconds
 _KEEP_ALIVE = 1.0  # in seconds
 _VOLUME_SCALE = 100.0
+VOLUME_LADDER = [
+    0.00, 0.03, 0.07, 0.12,        # Quiet: larger steps, still perceptible
+    0.18, 0.24, 0.30, 0.35,        # Transition zone
+    0.39, 0.42, 0.45, 0.48,        # Fine control starts
+    0.51, 0.54, 0.57, 0.60,        # Smooth loudness curve
+    0.64, 0.68, 0.73, 0.78,        # Taper ramp up
+    0.83, 0.88, 0.94, 1.00         # Final power push
+]
 _MAX_ATTEMPT_TILL_SUCCESS = 10
 _MAX_SEND_MESSAGE_TRIES = 5
 _MAX_CONNECTION_RETRIES = 10  # Each time `_send_command` is called, ...
@@ -394,7 +402,7 @@ class AsyncKefSpeaker:
         self,
         host: str,
         port: int = 50001,
-        volume_step: float = 0.02,
+        volume_step: float = 0.05,
         maximum_volume: float = 1.0,
         standby_time: Optional[int] = None,
         inverse_speaker_mode: bool = False,
@@ -413,6 +421,39 @@ class AsyncKefSpeaker:
         self.inverse_speaker_mode = inverse_speaker_mode
         self._comm = _AsyncCommunicator(host, port, loop=loop)
         self.sync = SyncKefSpeaker(self)
+        self._volume_raw = None  # new: store int volume 0–100
+        self._is_muted = False   # new: separate mute flag
+        self._volume_ladder = [int(v * _VOLUME_SCALE) for v in VOLUME_LADDER]
+
+    @property
+    def volume(self):
+        """Float volume for Home Assistant / UI (0.0–1.0)."""
+        if self._volume_raw is None:
+            return None
+        return self._volume_raw / _VOLUME_SCALE
+
+    @property
+    def is_muted(self):
+        """True if volume has 128 flag bit set."""
+        return self._is_muted
+
+    def set_raw_volume(self, raw: int):
+        """Decode speaker-provided volume: strip mute flag if set."""
+        self._is_muted = raw >= 128
+        self._volume_raw = raw - 128 if self._is_muted else raw
+
+    def _get_next_volume(self, up=True):
+        """Return the next volume step from the ladder."""
+        current = self._volume_raw or 0
+        steps = self._volume_ladder
+        try:
+            if up:
+                index = next(i for i, v in enumerate(steps) if v > current)
+            else:
+                index = next(i for i, v in reversed(list(enumerate(steps))) if v < current)
+        except StopIteration:
+            return current  # already at max/min
+        return steps[index]
 
     @retry(**_CMD_RETRY_KWARGS)
     async def get_state(self) -> State:
@@ -424,6 +465,17 @@ class AsyncKefSpeaker:
             raise ConnectionError(f"Getting source failed, got response {response}.")
         source, standby_time, orientation = INPUT_SOURCES_RESPONSE[code]
         return State(source, is_on, standby_time, orientation)
+
+    async def get_full_status(self):
+        """Fetch volume, mute, source, and power using existing methods."""
+        volume, is_muted = await self.get_volume_and_is_muted()
+        state = await self.get_state()
+        return {
+            "volume": volume,
+            "is_muted": is_muted,
+            "source": state.source,
+            "is_on": state.is_on,
+        }
 
     async def get_source(self) -> None:
         state = await self.get_state()
@@ -467,26 +519,15 @@ class AsyncKefSpeaker:
         )
 
     @retry(**_CMD_RETRY_KWARGS)
-    async def get_volume_and_is_muted(self, scale=True):
+    async def get_volume_and_is_muted(
+        self, scale=True
+    ) -> Tuple[Union[float, int], bool]:
         """Return volume level (0..1) and is_muted (in a single call)."""
         volume = await self._comm.send_message(COMMANDS["get_volume"])
         if volume is None:
             raise ConnectionError("Getting volume failed.")
-
-        is_muted = volume >= 128
-
-        if is_muted:
-            self._pre_mute_volume = volume - 128
-            visible_volume = 0
-        else:
-            self._pre_mute_volume = volume
-            visible_volume = volume
-
-        return (
-            visible_volume / _VOLUME_SCALE if scale else visible_volume,
-            is_muted,
-        )
-
+        self.set_raw_volume(volume)
+        return volume / _VOLUME_SCALE if scale else volume, self._is_muted
 
     @retry(**_CMD_RETRY_KWARGS)
     async def _set_volume(self, volume: int) -> None:
@@ -647,51 +688,50 @@ class AsyncKefSpeaker:
         await self._set_dsp("sub_db", db)
 
     async def get_volume(self) -> Optional[float]:
-        """Volume level of the media player (0..1). None if muted."""
-        volume, is_muted = await self.get_volume_and_is_muted(scale=True)
-        return volume if not is_muted else None
+        """Always report volume level, even when muted."""
+        return self._volume_raw / _VOLUME_SCALE if self._volume_raw is not None else None
 
     async def set_volume(self, value: float) -> float:
         volume = max(0.0, min(self.maximum_volume, value))
         await self._set_volume(int(volume * _VOLUME_SCALE))
         return volume
 
-    async def _change_volume(self, step):
-        if step is None:
-            step = 0.02  # fallback default
-        current_volume, _ = await self.get_volume_and_is_muted()
-        current_volume = max(0.0, min(current_volume, 1.0))  # clamp
+    async def _change_volume(self, step: float) -> float:
+        """Change volume by `step`."""
+        volume = await self.get_volume()
+        is_muted = await self.is_muted()
+        if is_muted:
+            await self.unmute()
+        assert volume is not None
+        return await self.set_volume(volume + step)
 
-        new_volume = current_volume + step
-        new_volume = max(0.0, min(new_volume, 1.0))  # clamp again after change
-
-        await self.set_volume(new_volume)
-
-    async def increase_volume(self):
-        if await self.is_muted():
-            restored_volume = getattr(self, "_pre_mute_volume", 20)
-            await self.set_volume(restored_volume / _VOLUME_SCALE)
-            return  # Step will be triggered on next press
-        await self._change_volume(self.volume_step)
-
-    async def decrease_volume(self):
-        if await self.is_muted():
-            restored_volume = getattr(self, "_pre_mute_volume", 20)
-            await self.set_volume(restored_volume / _VOLUME_SCALE)
+    async def volume_up(self):
+        """Step up the volume using the custom ladder."""
+        if self._is_muted:
+            await self.unmute()
             return
-        await self._change_volume(-self.volume_step)
+        new_raw = self._get_next_volume(up=True)
+        await self.set_volume(new_raw / _VOLUME_SCALE)
 
-    async def is_muted(self) -> bool:
-        _, is_muted = await self.get_volume_and_is_muted(scale=False)
-        return is_muted
+    async def volume_down(self):
+        """Step down the volume using the custom ladder."""
+        if self._is_muted:
+            await self.unmute()
+            return
+        new_raw = self._get_next_volume(up=False)
+        await self.set_volume(new_raw / _VOLUME_SCALE)
+        
+    async def increase_volume(self):
+        await self.volume_up()
+    
+    async def decrease_volume(self):
+        await self.volume_down()
 
     async def mute(self) -> None:
-        volume, _ = await self.get_volume_and_is_muted(scale=False)
-        await self._set_volume(int(volume) % 128 + 128)
+        await self._set_volume(self._volume_raw + 128)
 
     async def unmute(self) -> None:
-        volume = getattr(self, "_pre_mute_volume", 20)  # fallback to 0.2 if unknown
-        await self.set_volume(volume / _VOLUME_SCALE)
+        await self._set_volume(self._volume_raw)
 
     async def is_online(self) -> bool:  # type: ignore[return]
         try:
