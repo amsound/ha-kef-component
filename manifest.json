@@ -1,0 +1,11 @@
+{
+  "domain": "kef",
+  "name": "KEF",
+  "codeowners": ["@basnijholt"],
+  "documentation": "https://www.home-assistant.io/integrations/kef",
+  "iot_class": "local_polling",
+  "loggers": ["aiokef", "tenacity"],
+  "quality_scale": "legacy",
+  "requirements": ["getmac==0.9.5"],
+  "version": "0.0.2"
+}
