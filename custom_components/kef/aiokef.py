@@ -429,6 +429,10 @@ class AsyncKefSpeaker:
         self.inverse_speaker_mode = inverse_speaker_mode
         self._comm = _AsyncCommunicator(host, port, loop=loop)
         self.sync = SyncKefSpeaker(self)
+
+        # Assume supported until proven otherwise
+        self._supports_play_pause = True
+        
         self._volume_raw = None  # new: store int volume 0–100
         self._is_muted = False   # new: separate mute flag
         ladder = (
@@ -485,15 +489,22 @@ class AsyncKefSpeaker:
         return State(source, is_on, standby_time, orientation)
 
     async def get_full_status(self):
-        """Fetch volume, mute, source, power, and playback state."""
+        """Fetch volume, mute, source, power, and (optionally) playback state."""
         volume, is_muted = await self.get_volume_and_is_muted()
         state = await self.get_state()
 
-        try:
-            play_state = await self.get_play_pause()
-        except ConnectionError:
-            # Fallback if the speaker/firmware doesn't support this query
-            play_state = None
+        play_state = None
+        if getattr(self, "_supports_play_pause", False):
+            try:
+                play_state = await self.get_play_pause()
+            except Exception as e:  # noqa: BLE001 - we really want to catch everything here
+                _LOGGER.debug(
+                    "%s: get_play_pause not supported or failed, disabling: %s",
+                    self.host,
+                    e,
+                )
+                self._supports_play_pause = False
+                play_state = None
 
         return {
             "volume": volume,
