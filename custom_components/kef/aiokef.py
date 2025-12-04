@@ -443,6 +443,11 @@ class AsyncKefSpeaker:
         self._is_muted = raw >= 128
         self._volume_raw = raw - 128 if self._is_muted else raw
 
+    async def _ensure_volume_cached(self) -> None:
+        """Populate the cached volume if we haven't queried it yet."""
+        if self._volume_raw is None:
+            await self.get_volume_and_is_muted(scale=False)
+
     def _get_next_volume(self, up: bool = True) -> int:
         """Next ladder step in raw units using bisect (strictly monotonic)."""
         current = self._volume_raw or 0
@@ -711,12 +716,11 @@ class AsyncKefSpeaker:
 
     async def _change_volume(self, step: float) -> float:
         """Change volume by `step`."""
-        volume = await self.get_volume()
-        is_muted = await self.is_muted()
-        if is_muted:
+        await self._ensure_volume_cached()
+        if self._is_muted:
             await self.unmute()
-        assert volume is not None
-        return await self.set_volume(volume + step)
+        assert self._volume_raw is not None
+        return await self.set_volume(self._volume_raw / _VOLUME_SCALE + step)
 
     async def volume_up(self):
         """Unmute-resume; special-case + at zero; otherwise step up."""
@@ -745,9 +749,13 @@ class AsyncKefSpeaker:
         await self.volume_down()
 
     async def mute(self) -> None:
+        await self._ensure_volume_cached()
+        assert self._volume_raw is not None
         await self._set_volume(self._volume_raw + 128)
 
     async def unmute(self) -> None:
+        await self._ensure_volume_cached()
+        assert self._volume_raw is not None
         await self._set_volume(self._volume_raw)
 
     async def is_online(self) -> bool:  # type: ignore[return]
