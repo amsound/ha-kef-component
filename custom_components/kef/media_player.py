@@ -194,7 +194,7 @@ async def async_setup_platform(
 class KefMediaPlayer(MediaPlayerEntity):
     """Kef Player Object."""
 
-    _attr_icon = "mdi:speaker-wireless"
+    _attr_icon = "mdi:speaker"
 
     def __init__(
         self,
@@ -203,6 +203,7 @@ class KefMediaPlayer(MediaPlayerEntity):
         port,
         maximum_volume,
         volume_step,
+        use_custom_volume_ladder,
         standby_time,
         inverse_speaker_mode,
         supports_on,
