@@ -487,26 +487,17 @@ class AsyncKefSpeaker:
             raise ConnectionError(f"Getting source failed, got response {response}.")
         source, standby_time, orientation = INPUT_SOURCES_RESPONSE[code]
         return State(source, is_on, standby_time, orientation)
-
+        
     async def get_full_status(self):
         """Fetch volume, mute, source, power, and (optionally) playback state."""
         volume, is_muted = await self.get_volume_and_is_muted()
         state = await self.get_state()
-    
+
         play_state = None
         # Only try to read playback state when it actually makes sense
         if state.is_on and state.source in ("Wifi", "Bluetooth"):
-            try:
-                play_state = await self.get_play_pause()
-            except Exception as e:  # catch everything, then give up on play/pause for this device
-                _LOGGER.debug(
-                    "%s: get_play_pause not supported or failed, disabling: %s",
-                    self.host,
-                    e,
-                )
-                # Optionally: remember this and never try again on this instance
-                # self._supports_play_pause = False
-    
+            play_state = await self._get_play_pause_once()
+
         return {
             "volume": volume,
             "is_muted": is_muted,
@@ -597,6 +588,35 @@ class AsyncKefSpeaker:
                 f"Getting play or pause failed, got response {response}."
             )
 
+    async def _get_play_pause_once(self) -> str | None:
+        """Best-effort read of play/pause with a single low-level message.
+
+        - No tenacity retries
+        - Only used by Home Assistant polling
+        - Returns "Playing", "Paused", "Stopped", or None on any problem
+        """
+        cmd = COMMANDS["get_play_pause"]
+        try:
+            # Single connection open + single I/O
+            await self._comm.open_connection()
+            raw_reply = await self._comm._send_message(cmd)  # type: ignore[attr-defined]
+            if raw_reply is None:
+                return None
+            reply = _parse_response(cmd, raw_reply)[-2]
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug("%s: _get_play_pause_once failed: %s", self.host, e)
+            return None
+
+        if reply == 128:
+            return "Paused"
+        if reply == 129:
+            return "Playing"
+        if reply == 132:
+            return "Stopped"
+
+        _LOGGER.debug("%s: Unknown play/pause reply %s", self.host, reply)
+        return None
+    
     @retry(**_CMD_RETRY_KWARGS)
     async def prev_track(self) -> None:
         response = await self._comm.send_message(COMMANDS["prev_track"])
