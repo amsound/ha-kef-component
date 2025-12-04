@@ -32,6 +32,7 @@ DEFAULT_NAME = "KEF"
 DEFAULT_PORT = 50001
 DEFAULT_MAX_VOLUME = 1
 DEFAULT_VOLUME_STEP = 0.05
+DEFAULT_USE_CUSTOM_VOLUME_LADDER = True
 DEFAULT_INVERSE_SPEAKER_MODE = False
 DEFAULT_SUPPORTS_ON = True
 
@@ -44,6 +45,7 @@ SOURCES["LS50"] = SOURCES["LSX"] + ["Usb"]
 
 CONF_MAX_VOLUME = "maximum_volume"
 CONF_VOLUME_STEP = "volume_step"
+CONF_USE_CUSTOM_VOLUME_LADDER = "use_custom_volume_ladder"
 CONF_INVERSE_SPEAKER_MODE = "inverse_speaker_mode"
 CONF_SUPPORTS_ON = "supports_on"
 CONF_STANDBY_TIME = "standby_time"
@@ -67,6 +69,9 @@ PLATFORM_SCHEMA = MEDIA_PLAYER_PLATFORM_SCHEMA.extend(
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_MAX_VOLUME, default=DEFAULT_MAX_VOLUME): cv.small_float,
         vol.Optional(CONF_VOLUME_STEP, default=DEFAULT_VOLUME_STEP): cv.small_float,
+        vol.Optional(
+            CONF_USE_CUSTOM_VOLUME_LADDER, default=DEFAULT_USE_CUSTOM_VOLUME_LADDER
+        ): cv.boolean,
         vol.Optional(
             CONF_INVERSE_SPEAKER_MODE, default=DEFAULT_INVERSE_SPEAKER_MODE
         ): cv.boolean,
@@ -104,6 +109,7 @@ async def async_setup_platform(
     name = config[CONF_NAME]
     maximum_volume = config[CONF_MAX_VOLUME]
     volume_step = config[CONF_VOLUME_STEP]
+    use_custom_volume_ladder = config[CONF_USE_CUSTOM_VOLUME_LADDER]
     inverse_speaker_mode = config[CONF_INVERSE_SPEAKER_MODE]
     supports_on = config[CONF_SUPPORTS_ON]
     standby_time = config.get(CONF_STANDBY_TIME)
@@ -132,6 +138,7 @@ async def async_setup_platform(
         port,
         maximum_volume,
         volume_step,
+        use_custom_volume_ladder,
         standby_time,
         inverse_speaker_mode,
         supports_on,
@@ -210,10 +217,11 @@ class KefMediaPlayer(MediaPlayerEntity):
         self._speaker = AsyncKefSpeaker(
             host,
             port,
-            volume_step,
-            maximum_volume,
-            standby_time,
-            inverse_speaker_mode,
+            volume_step=volume_step,
+            maximum_volume=maximum_volume,
+            standby_time=standby_time,
+            inverse_speaker_mode=inverse_speaker_mode,
+            use_custom_volume_ladder=use_custom_volume_ladder,
             loop=loop,
         )
         self._attr_unique_id = unique_id
