@@ -12,6 +12,8 @@ from .aiokef import DSP_OPTION_MAPPING
 from getmac import get_mac_address
 import voluptuous as vol
 
+from tenacity import RetryError
+
 from homeassistant.components.media_player import (
     PLATFORM_SCHEMA as MEDIA_PLAYER_PLATFORM_SCHEMA,
     MediaPlayerEntity,
@@ -253,22 +255,25 @@ class KefMediaPlayer(MediaPlayerEntity):
         """Update latest state."""
         _LOGGER.debug("Running async_update")
         try:
+            # Try to see if we can talk to the speaker at all
             self._attr_available = await self._speaker.is_online()
+
             if self.available:
                 status = await self._speaker.get_full_status()
 
+                # Volume + source from the speaker object
                 self._attr_is_volume_muted = self._speaker.is_muted
                 self._attr_volume_level = self._speaker.volume
                 self._attr_source = status["source"]
 
-                # Cache play state from the speaker
+                # Cache play state (Wifi / Bluetooth only, per get_full_status)
                 self._play_state = status.get("play_state")
 
                 if not status["is_on"]:
                     # Fully off / standby
                     self._attr_state = MediaPlayerState.OFF
                 else:
-                    # Speaker is powered; now refine based on play state
+                    # Speaker is powered; refine based on play state
                     if self._play_state == "Playing":
                         self._attr_state = MediaPlayerState.PLAYING
                     elif self._play_state == "Paused":
@@ -281,17 +286,24 @@ class KefMediaPlayer(MediaPlayerEntity):
                         self._attr_state = MediaPlayerState.ON
 
                 # No DSP calls here – keeps things snappy
+
             else:
+                # We couldn't reach the speaker at all
                 self._attr_is_volume_muted = None
                 self._attr_source = None
                 self._attr_volume_level = None
                 self._attr_state = MediaPlayerState.OFF
                 self._play_state = None
-        except (ConnectionError, TimeoutError) as err:
-            _LOGGER.debug("Error in `update`: %s", err)
-            self._attr_state = None
-            self._play_state = None
 
+        except (ConnectionError, TimeoutError, RetryError, OSError) as err:
+            # Anything ugly from aiokef / tenacity → just mark it unavailable
+            _LOGGER.debug("Error in `update`: %s", err)
+            self._attr_available = False
+            self._attr_is_volume_muted = None
+            self._attr_source = None
+            self._attr_volume_level = None
+            self._attr_state = MediaPlayerState.OFF
+            self._play_state = None
 
     async def async_turn_off(self) -> None:
         """Turn the media player off."""
