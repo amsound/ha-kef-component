@@ -485,14 +485,22 @@ class AsyncKefSpeaker:
         return State(source, is_on, standby_time, orientation)
 
     async def get_full_status(self):
-        """Fetch volume, mute, source, and power using existing methods."""
+        """Fetch volume, mute, source, power, and playback state."""
         volume, is_muted = await self.get_volume_and_is_muted()
         state = await self.get_state()
+
+        try:
+            play_state = await self.get_play_pause()
+        except ConnectionError:
+            # Fallback if the speaker/firmware doesn't support this query
+            play_state = None
+
         return {
             "volume": volume,
             "is_muted": is_muted,
             "source": state.source,
             "is_on": state.is_on,
+            "play_state": play_state,
         }
 
     async def get_source(self) -> None:
