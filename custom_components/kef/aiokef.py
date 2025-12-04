@@ -385,6 +385,9 @@ class AsyncKefSpeaker:
     maximum_volume : float, optional
         The maximum allow volume, between 0 and 1. Use this to avoid
         accidentally setting very high volumes, by default 1.0.
+    use_custom_volume_ladder : bool, optional
+        Use the predefined volume ladder (True) or a linear step ladder
+        based on ``volume_step`` (False).
     loop : `asyncio.BaseEventLoop`, optional
         The eventloop to use.
     standby_time: int, optional
@@ -408,6 +411,7 @@ class AsyncKefSpeaker:
         maximum_volume: float = 1.0,
         standby_time: Optional[int] = None,
         inverse_speaker_mode: bool = False,
+        use_custom_volume_ladder: bool = True,
         *,
         loop: Optional[asyncio.events.AbstractEventLoop] = None,
     ):
@@ -418,6 +422,8 @@ class AsyncKefSpeaker:
         self.host = host
         self.port = port
         self.volume_step = volume_step
+        if not use_custom_volume_ladder and self.volume_step <= 0:
+            raise ValueError("`volume_step` must be positive when using linear ladder.")
         self.maximum_volume = 1.0 if maximum_volume is None else float(max(0.0, min(1.0, maximum_volume)))
         self.standby_time = standby_time
         self.inverse_speaker_mode = inverse_speaker_mode
@@ -425,7 +431,14 @@ class AsyncKefSpeaker:
         self.sync = SyncKefSpeaker(self)
         self._volume_raw = None  # new: store int volume 0–100
         self._is_muted = False   # new: separate mute flag
-        self._volume_ladder = [int(v * _VOLUME_SCALE) for v in VOLUME_LADDER]
+        ladder = (
+            VOLUME_LADDER
+            if use_custom_volume_ladder
+            else arange(0, self.maximum_volume, volume_step)
+        )
+        if ladder[-1] < self.maximum_volume:
+            ladder.append(self.maximum_volume)
+        self._volume_ladder = [int(round(v * _VOLUME_SCALE)) for v in ladder]
 
     @property
     def volume(self):
