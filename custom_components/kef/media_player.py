@@ -154,7 +154,7 @@ async def async_setup_platform(
         _LOGGER.debug("%s is already configured", host)
     else:
         hass.data[DOMAIN][host] = media_player
-        async_add_entities([media_player], update_before_add=True)
+        async_add_entities([media_player])
 
     platform = entity_platform.async_get_current_platform()
 
