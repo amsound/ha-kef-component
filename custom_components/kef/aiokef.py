@@ -492,20 +492,21 @@ class AsyncKefSpeaker:
         """Fetch volume, mute, source, power, and (optionally) playback state."""
         volume, is_muted = await self.get_volume_and_is_muted()
         state = await self.get_state()
-
+    
         play_state = None
-        if getattr(self, "_supports_play_pause", False):
+        # Only try to read playback state when it actually makes sense
+        if state.is_on and state.source in ("Wifi", "Bluetooth"):
             try:
                 play_state = await self.get_play_pause()
-            except Exception as e:  # noqa: BLE001 - we really want to catch everything here
+            except Exception as e:  # catch everything, then give up on play/pause for this device
                 _LOGGER.debug(
                     "%s: get_play_pause not supported or failed, disabling: %s",
                     self.host,
                     e,
                 )
-                self._supports_play_pause = False
-                play_state = None
-
+                # Optionally: remember this and never try again on this instance
+                # self._supports_play_pause = False
+    
         return {
             "volume": volume,
             "is_muted": is_muted,
