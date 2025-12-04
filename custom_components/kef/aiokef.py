@@ -28,12 +28,13 @@ _TIMEOUT = 2.0  # in seconds
 _KEEP_ALIVE = 1.0  # in seconds
 _VOLUME_SCALE = 100.0
 VOLUME_LADDER = [
-    0.00, 0.03, 0.07, 0.12,        # Quiet: larger steps, still perceptible
-    0.18, 0.24, 0.30, 0.35,        # Transition zone
-    0.39, 0.42, 0.45, 0.48,        # Fine control starts
-    0.51, 0.54, 0.57, 0.60,        # Smooth loudness curve
-    0.64, 0.68, 0.73, 0.78,        # Taper ramp up
-    0.83, 0.88, 0.94, 1.00         # Final power push
+    0.00, 0.02, 0.04, 0.06, 0.08,  # Whisper: ultra-fine steps for night mode
+    0.10, 0.12, 0.14, 0.16, 0.18,  # Quiet room: gentle rise
+    0.20, 0.22, 0.24, 0.26, 0.28,  # Conversational levels
+    0.30, 0.33, 0.36, 0.39, 0.42,  # Gradual lift into moderate listening
+    0.45, 0.48, 0.52, 0.56, 0.60,  # Balanced daily listening
+    0.64, 0.68, 0.72, 0.76, 0.80,  # Energetic but controlled
+    0.85, 0.90, 0.95, 1.00         # Peak output with headroom
 ]
 _MAX_ATTEMPT_TILL_SUCCESS = 10
 _MAX_SEND_MESSAGE_TRIES = 5
