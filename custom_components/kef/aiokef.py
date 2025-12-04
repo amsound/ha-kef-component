@@ -518,27 +518,27 @@ class AsyncKefSpeaker:
         )
         if response != _RESPONSE_OK:
             raise ConnectionError(f"Setting source failed, got response {response}.")
-
-        for i in range(_MAX_ATTEMPT_TILL_SUCCESS):
+            
+        for attempt in range(_MAX_ATTEMPT_TILL_SUCCESS):
             state = await self.get_state()
             current_source = state.source
-
-            if (
-                (current_source == source)
-                and ("R/L" if self.inverse_speaker_mode else "L/R")
-                and (state.standby_time == self.standby_time)
-            ):
+        
+            if current_source == source:
                 _LOGGER.debug("%s: Source is %s", self.host, source)
                 return
+        
             _LOGGER.debug(
-                "%s: Try #%s: Source is %s but %s is selected",
+                "%s: Try #%s: Source is %s but %s is selected "
+                "(standby_time speaker=%s, expected=%s)",
                 self.host,
-                i,
+                attempt,
                 current_source,
                 source,
+                state.standby_time,
+                self.standby_time,
             )
             await asyncio.sleep(0.5)
-
+        
         raise TimeoutError(
             f"Tried to set {source} {_MAX_ATTEMPT_TILL_SUCCESS} times"
             f" but the speaker is still {current_source}."
