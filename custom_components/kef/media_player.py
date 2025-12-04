@@ -338,6 +338,11 @@ class KefMediaPlayer(MediaPlayerEntity):
         """Select input source."""
         if self.source_list is not None and source in self.source_list:
             await self._speaker.set_source(source)
+
+            # After switching to Wifi/Bluetooth, do a one-shot play state read
+            if source in ("Wifi", "Bluetooth"):
+                status = await self._speaker.get_full_status()
+                self._play_state = status.get("play_state")
         else:
             raise ValueError(f"Unknown input source: {source}.")
 
