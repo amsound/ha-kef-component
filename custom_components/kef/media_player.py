@@ -232,6 +232,8 @@ class KefMediaPlayer(MediaPlayerEntity):
         self._dsp = None
         self._update_dsp_task_remover = None
 
+        self._play_state: str | None = None
+
         self._attr_supported_features = (
             MediaPlayerEntityFeature.VOLUME_SET
             | MediaPlayerEntityFeature.VOLUME_STEP
@@ -253,22 +255,42 @@ class KefMediaPlayer(MediaPlayerEntity):
             self._attr_available = await self._speaker.is_online()
             if self.available:
                 status = await self._speaker.get_full_status()
+
                 self._attr_is_volume_muted = self._speaker.is_muted
                 self._attr_volume_level = self._speaker.volume
                 self._attr_source = status["source"]
-                self._attr_state = (
-                    MediaPlayerState.ON if status["is_on"] else MediaPlayerState.OFF
-                )
-#                if self._dsp is None:
-#                    await self.update_dsp()
+
+                # Cache play state from the speaker
+                self._play_state = status.get("play_state")
+
+                if not status["is_on"]:
+                    # Fully off / standby
+                    self._attr_state = MediaPlayerState.OFF
+                else:
+                    # Speaker is powered; now refine based on play state
+                    if self._play_state == "Playing":
+                        self._attr_state = MediaPlayerState.PLAYING
+                    elif self._play_state == "Paused":
+                        self._attr_state = MediaPlayerState.PAUSED
+                    elif self._play_state == "Stopped":
+                        # Transport stopped but powered
+                        self._attr_state = MediaPlayerState.IDLE
+                    else:
+                        # Fallback if we couldn't read play state
+                        self._attr_state = MediaPlayerState.ON
+
+                # No DSP calls here – keeps things snappy
             else:
                 self._attr_is_volume_muted = None
                 self._attr_source = None
                 self._attr_volume_level = None
                 self._attr_state = MediaPlayerState.OFF
+                self._play_state = None
         except (ConnectionError, TimeoutError) as err:
             _LOGGER.debug("Error in `update`: %s", err)
             self._attr_state = None
+            self._play_state = None
+
 
     async def async_turn_off(self) -> None:
         """Turn the media player off."""
@@ -339,21 +361,13 @@ class KefMediaPlayer(MediaPlayerEntity):
             **mode._asdict(),
         }
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to DSP updates."""
-        self._update_dsp_task_remover = async_track_time_interval(
-            self.hass, self.update_dsp, DSP_SCAN_INTERVAL
-        )
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Unsubscribe to DSP updates."""
-        self._update_dsp_task_remover()
-        self._update_dsp_task_remover = None
-
     @property
     def extra_state_attributes(self):
-        """Return the DSP settings of the KEF device."""
-        return self._dsp or {}
+        """Return extra info about the KEF device."""
+        attrs = {}
+        if self._play_state is not None:
+            attrs["play_state"] = self._play_state
+        return attrs
 
     async def set_mode(
         self,
